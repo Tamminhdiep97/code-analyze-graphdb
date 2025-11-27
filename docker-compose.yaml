@@ -1,0 +1,25 @@
+services:
+  code_parser:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: code-parser
+    entrypoint: ["python3"]
+    command: ["-m", "experiment.main", "experiment/test_code/c/test_function_calls.c", "--language", "c", "--version", "c99"]
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./experiment:/app/experiment
+    environment:
+      - PYTHONUNBUFFERED=1
+      - GRAPH_HOST=graphd
+      - GRAPH_PORT=9669
+      - GRAPH_USER=root
+      - GRAPH_PASSWORD=password
+      - GRAPH_SPACE=code_graph
+    networks:
+      - code-review-external-network
+
+networks:
+  code-review-external-network:
+    external: true

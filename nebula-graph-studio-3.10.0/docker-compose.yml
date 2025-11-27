@@ -1,0 +1,17 @@
+version: '3.4'
+services:
+  web:
+    image: vesoft/nebula-graph-studio:v3.10.0
+    environment:
+      USER: root
+    ports:
+      - 7001:7001
+    networks:
+      - nebula-web
+      - code-review-external-network
+
+networks:
+  nebula-web:
+    driver: bridge
+  code-review-external-network:
+    external: true
