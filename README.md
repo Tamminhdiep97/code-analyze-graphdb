@@ -1,7 +1,7 @@
-# CodeReview_engineer - Graph-Based Code Review System
+# Code_engineer - Graph-Based Code System
 
 ## Overview
-This is a graph-based code review system that uses graph databases to store and analyze relationships between code elements like functions, variables, classes, and modules. It's designed to handle longer code more effectively than traditional chunk-based approaches.
+This is a graph-based code system that uses graph databases to store and analyze relationships between code elements like functions, variables, classes, and modules. It's designed to handle longer code more effectively than traditional chunk-based approaches.
 
 ## Key Components
 
