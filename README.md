@@ -13,7 +13,7 @@ This is a graph-based code system that uses graph databases to store and analyze
 
 4. **Query System** (`query_system.py`): Provides methods to query the graph for relevant code context
 
-5. **Review Algorithm** (`review_algorithm.py`): Performs code review using graph relationships
+5. **Review Algorithm** (`review_algorithm.py`): Performs code analyze using graph relationships
 
 ## Features
 
