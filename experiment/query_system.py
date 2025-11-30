@@ -28,13 +28,24 @@ class QuerySystem:
         # Use the space
         self.session.execute(f'USE {space};')
 
+    def _sanitize_query_value(self, value: str) -> str:
+        """
+        Sanitize a string value to be safely used in Nebula Graph queries
+        Escapes special characters that could break query syntax
+        """
+        if value is None:
+            return value
+        # Escape quotes to prevent query syntax errors
+        return value.replace('"', '\\"').replace("'", "\\'")
+
     def get_function_dependencies(self, function_name: str, file_path: str = None) -> List[Dict[str, Any]]:
         """
         Get all functions called by a specific function
         """
-        if file_path:
+        sanitized_file_path = self._sanitize_query_value(file_path) if file_path else None
+        if sanitized_file_path:
             query = f"""
-            MATCH (f:Function) WHERE f.name == "{function_name}" AND f.file_path == "{file_path}"
+            MATCH (f:Function) WHERE f.name == "{function_name}" AND f.file_path == "{sanitized_file_path}"
             -[:CALLS]->(called:Function)
             RETURN called.name as name, called.file_path as file_path, called.line_start as line_start
             """
@@ -50,9 +61,9 @@ class QuerySystem:
                 records = []
                 for row in result.rows():
                     record = {
-                        'name': row.values[0].as_string(),
-                        'file_path': row.values[1].as_string(),
-                        'line_start': row.values[2].as_int() if row.values[2].is_int() else row.values[2].as_string()
+                        'name': row.values[0],
+                        'file_path': row.values[1],
+                        'line_start': row.values[2].as_int() if row.values[2].is_int() else row.values[2]
                     }
                     records.append(record)
                 return records
@@ -67,9 +78,10 @@ class QuerySystem:
         """
         Get all functions that call a specific function
         """
-        if file_path:
+        sanitized_file_path = self._sanitize_query_value(file_path) if file_path else None
+        if sanitized_file_path:
             query = f"""
-            MATCH (caller:Function)-[:CALLS]->(f:Function) WHERE f.name == "{function_name}" AND f.file_path == "{file_path}"
+            MATCH (caller:Function)-[:CALLS]->(f:Function) WHERE f.name == "{function_name}" AND f.file_path == "{sanitized_file_path}"
             RETURN caller.name as name, caller.file_path as file_path, caller.line_start as line_start
             """
         else:
@@ -83,9 +95,9 @@ class QuerySystem:
                 records = []
                 for row in result.rows():
                     record = {
-                        'name': row.values[0].as_string(),
-                        'file_path': row.values[1].as_string(),
-                        'line_start': row.values[2].as_int() if row.values[2].is_int() else row.values[2].as_string()
+                        'name': row.values[0],
+                        'file_path': row.values[1],
+                        'line_start': row.values[2].as_int() if row.values[2].is_int() else row.values[2]
                     }
                     records.append(record)
                 return records
@@ -100,9 +112,10 @@ class QuerySystem:
         """
         Get all places where a variable is used
         """
-        if file_path:
+        sanitized_file_path = self._sanitize_query_value(file_path) if file_path else None
+        if sanitized_file_path:
             query = f"""
-            MATCH (v:Variable) WHERE v.name == "{variable_name}" AND v.file_path == "{file_path}"
+            MATCH (v:Variable) WHERE v.name == "{variable_name}" AND v.file_path == "{sanitized_file_path}"
             RETURN v.scope as scope, v.line_start as line_start, v.function_name as function_name
             """
         else:
@@ -116,10 +129,10 @@ class QuerySystem:
                 records = []
                 for row in result.rows():
                     record = {
-                        'scope': row.values[0].as_string() if row.values[0].is_string() else None,
-                        'line_start': row.values[1].as_int() if row.values[1].is_int() else row.values[1].as_string(),
-                        'function_name': row.values[2].as_string() if row.values[2].is_string() else None,
-                        'file_path': row.values[3].as_string() if len(row.values) > 3 and row.values[3].is_string() else None
+                        'scope': row.values[0] if row.values[0].is_string() else None,
+                        'line_start': row.values[1].as_int() if row.values[1].is_int() else row.values[1],
+                        'function_name': row.values[2] if row.values[2].is_string() else None,
+                        'file_path': row.values[3] if len(row.values) > 3 and row.values[3].is_string() else None
                     }
                     records.append(record)
                 return records
@@ -134,10 +147,12 @@ class QuerySystem:
         """
         Get all functions that might be impacted by changes in specific functions
         """
+        # Sanitize the file path to prevent query issues
+        sanitized_file_path = self._sanitize_query_value(changed_file_path)
         # Construct the query with the function names list in Nebula format
         functions_str = '", "'.join(changed_functions)
         query = f"""
-        MATCH (changed_func:Function) WHERE changed_func.file_path == "{changed_file_path}" AND changed_func.name IN ["{functions_str}"]
+        MATCH (changed_func:Function) WHERE changed_func.file_path == "{sanitized_file_path}" AND changed_func.name IN ["{functions_str}"]
         MATCH (changed_func)<-[:CALLS*1..5]-(impacted:Function)
         RETURN DISTINCT impacted.name as name, impacted.file_path as file_path, impacted.line_start as line_start
         """
@@ -147,9 +162,9 @@ class QuerySystem:
                 records = []
                 for row in result.rows():
                     record = {
-                        'name': row.values[0].as_string(),
-                        'file_path': row.values[1].as_string(),
-                        'line_start': row.values[2].as_int() if row.values[2].is_int() else row.values[2].as_string()
+                        'name': row.values[0],
+                        'file_path': row.values[1],
+                        'line_start': row.values[2].as_int() if row.values[2].is_int() else row.values[2]
                     }
                     records.append(record)
                 return records
@@ -175,9 +190,9 @@ class QuerySystem:
     #             records = []
     #             for row in result.rows():
     #                 record = {
-    #                     'type': row.values[0].as_string(),
-    #                     'name': row.values[1].as_string(),
-    #                     'line_start': row.values[2].as_int() if row.values[2].is_int() else row.values[2].as_string()
+    #                     'type': row.values[0],
+    #                     'name': row.values[1],
+    #                     'line_start': row.values[2].as_int() if row.values[2].is_int() else row.values[2]
     #                 }
     #                 records.append(record)
     #             return records
@@ -187,103 +202,129 @@ class QuerySystem:
     #     except Exception as e:
     #         logger.error(f"Error getting related components: {e}")
     #         return []
+
+
     def get_related_components(self, file_path: str) -> List[Dict[str, Any]]:
         """
         Get all components related to a specific file
         """
-        # Get all possible component types separately to avoid the tags() function error
+        # Sanitize the file path to prevent query issues
+        sanitized_file_path = self._sanitize_query_value(file_path)
         components = []
 
-        # Query for Functions
         query_func = f"""
-        MATCH (f:File)-[:CONTAINS]->(comp:Function) WHERE f.path == "{file_path}"
+        MATCH (f:File)-[:CONTAINS]->(comp:Function) WHERE f.`path` == '{file_path}'
         RETURN "Function" as type, comp.name as name, comp.line_start as line_start
+        """
+        query_func = f"""
+        MATCH (f:File) WHERE f["path"] == '{file_path}'
+        MATCH (f)-[r:contains]->(comp:Function)
+        RETURN "Function" as type, comp["name"] as name, comp["line_start"] as line_start
         """
         try:
             result = self.session.execute(query_func)
+            logger.info(f"result: {result}")
+            logger.info(result.is_succeeded())
             if result.is_succeeded():
                 for row in result.rows():
                     record = {
-                        'type': row.values[0].as_string(),
-                        'name': row.values[1].as_string(),
-                        'line_start': row.values[2].as_int() if row.values[2].is_int() else row.values[2
-                                                                                                       ].as_string()
+                        'type': row.values[0],
+                        'name': row.values[1],
+                        'line_start': row.values[2]
                     }
                     components.append(record)
         except Exception as e:
             logger.error(f"Error getting function components: {e}")
 
-        # Query for Classes
+        # Query for Classes - FIXED: add backticks to path, use =
         query_class = f"""
-        MATCH (f:File)-[:CONTAINS]->(comp:Class) WHERE f.path == "{file_path}"
+        MATCH (f:File)-[:CONTAINS]->(comp:Class) WHERE f.`path` == '{sanitized_file_path}'
         RETURN "Class" as type, comp.name as name, comp.line_start as line_start
+        """
+        query_class = f"""
+        MATCH (f:File) WHERE f["path"] == '{file_path}'
+        MATCH (f)-[r:contains]->(comp:Class)
+        RETURN "Class" as type, comp["name"] as name, comp["line_start"] as line_start
         """
         try:
             result = self.session.execute(query_class)
             if result.is_succeeded():
                 for row in result.rows():
                     record = {
-                        'type': row.values[0].as_string(),
-                        'name': row.values[1].as_string(),
-                        'line_start': row.values[2].as_int() if row.values[2].is_int() else row.values[2
-                                                                                                       ].as_string()
+                        'type': row.values[0],
+                        'name': row.values[1],
+                        'line_start': row.values[2]
                     }
                     components.append(record)
         except Exception as e:
             logger.error(f"Error getting class components: {e}")
 
-        # Query for Variables
+        # Query for Variables - FIXED: add backticks to path, use =, fix line continuation
         query_var = f"""
-        MATCH (f:File)-[:CONTAINS]->(comp:Variable) WHERE f.path == "{file_path}"
+        MATCH (f:File)-[:CONTAINS]->(comp:Variable) WHERE f.`path` == '{sanitized_file_path}'
         RETURN "Variable" as type, comp.name as name, comp.line_start as line_start
+        """
+        query_var = f"""
+        MATCH (f:File) WHERE f["path"] == '{file_path}'
+        MATCH (f)-[r:contains]->(comp:Variable)
+        RETURN "Variable" as type, comp["name"] as name, comp["line_start"] as line_start
         """
         try:
             result = self.session.execute(query_var)
             if result.is_succeeded():
                 for row in result.rows():
                     record = {
-                        'type': row.values[0].as_string(),
-                        'name': row.values[1].as_string(),
-                        'line_start': row.values[2].as_int() if row.values[2].is_int() else row.values[2
-                                                                                                       ].as_string()
+                        'type': row.values[0],
+                        'name': row.values[1],
+                        'line_start': row.values[2] if row.values[2] else row.values[2]
                     }
                     components.append(record)
         except Exception as e:
             logger.error(f"Error getting variable components: {e}")
 
-        # Query for Methods
+        # Query for Methods - FIXED: add backticks to path, use =, fix line continuation
         query_meth = f"""
-        MATCH (f:File)-[:CONTAINS]->(comp:Method) WHERE f.path == "{file_path}"
+        MATCH (f:File)-[:CONTAINS]->(comp:Method) WHERE f.`path` = '{sanitized_file_path}'
         RETURN "Method" as type, comp.name as name, comp.line_start as line_start
         """
+        query_meth = f"""
+        MATCH (f:File) WHERE f["path"] == '{file_path}'
+        MATCH (f)-[r:contains]->(comp:Method)
+        RETURN "Method" as type, comp["name"] as name, comp["line_start"] as line_start
+        """
+
         try:
             result = self.session.execute(query_meth)
             if result.is_succeeded():
                 for row in result.rows():
                     record = {
-                        'type': row.values[0].as_string(),
-                        'name': row.values[1].as_string(),
-                        'line_start': row.values[2].as_int() if row.values[2].is_int() else row.values[2
-                                                                                                       ].as_string()
+                        'type': row.values[0],
+                        'name': row.values[1],
+                        'line_start': row.values[2]
                     }
                     components.append(record)
         except Exception as e:
             logger.error(f"Error getting method components: {e}")
 
-        # Query for Structs
+        # Query for Structs - FIXED: add backticks to path, use =, fix line continuation
         query_struct = f"""
-        MATCH (f:File)-[:CONTAINS]->(comp:Struct) WHERE f.path == "{file_path}"
+        MATCH (f:File)-[:CONTAINS]->(comp:Struct) WHERE f.`path` = '{sanitized_file_path}'
         RETURN "Struct" as type, comp.name as name, comp.line_start as line_start
         """
+        query_struct = f"""
+        MATCH (f:File) WHERE f["path"] == '{file_path}'
+        MATCH (f)-[r:contains]->(comp:Struct)
+        RETURN "Struct" as type, comp["name"] as name, comp["line_start"] as line_start
+        """
+
         try:
             result = self.session.execute(query_struct)
             if result.is_succeeded():
                 for row in result.rows():
                     record = {
-                        'type': row.values[0].as_string(),
-                        'name': row.values[1].as_string(),
-                        'line_start': row.values[2].as_int() if row.values[2].is_int() else row.values[2
-                                                                                                       ].as_string()
+                        'type': row.values[0],
+                        'name': row.values[1],
+                        'line_start': row.values[2]
                     }
                     components.append(record)
         except Exception as e:
@@ -295,8 +336,9 @@ class QuerySystem:
         """
         Get the flow of data from a specific variable
         """
+        sanitized_file_path = self._sanitize_query_value(file_path)
         query = f"""
-        MATCH (v:Variable)-[:HAS_PARAMETER|CONTAINS*]-(func:Function) WHERE v.name == "{variable_name}" AND v.file_path == "{file_path}"
+        MATCH (v:Variable)-[:HAS_PARAMETER|CONTAINS*]-(func:Function) WHERE v.name == "{variable_name}" AND v.file_path == "{sanitized_file_path}"
         OPTIONAL MATCH (func)-[:CALLS]->(called:Function)
         RETURN v.name as var_name, func.name as function_name, called.name as called_function
         """
@@ -306,9 +348,9 @@ class QuerySystem:
                 records = []
                 for row in result.rows():
                     record = {
-                        'var_name': row.values[0].as_string(),
-                        'function_name': row.values[1].as_string() if row.values[1].is_string() else None,
-                        'called_function': row.values[2].as_string() if row.values[2].is_string() else None
+                        'var_name': row.values[0],
+                        'function_name': row.values[1] if row.values[1].is_string() else None,
+                        'called_function': row.values[2] if row.values[2].is_string() else None
                     }
                     records.append(record)
                 return records
@@ -336,10 +378,10 @@ class QuerySystem:
             if result.is_succeeded():
                 for row in result.rows():
                     record = {
-                        'function_name': row.values[0].as_string(),
-                        'file_path': row.values[1].as_string(),
-                        'line_start': row.values[2].as_int() if row.values[2].is_int() else row.values[2].as_string(),
-                        'dangerous_function': row.values[3].as_string()
+                        'function_name': row.values[0],
+                        'file_path': row.values[1],
+                        'line_start': row.values[2],
+                        'dangerous_function': row.values[3]
                     }
                     patterns.append(record)
         except Exception as e:
@@ -356,10 +398,10 @@ class QuerySystem:
             if result.is_succeeded():
                 for row in result.rows():
                     record = {
-                        'function_name': row.values[0].as_string(),
-                        'file_path': row.values[1].as_string(),
-                        'line_start': row.values[2].as_int() if row.values[2].is_int() else row.values[2].as_string(),
-                        'db_operation': row.values[3].as_string()
+                        'function_name': row.values[0],
+                        'file_path': row.values[1],
+                        'line_start': row.values[2],
+                        'db_operation': row.values[3]
                     }
                     patterns.append(record)
         except Exception as e:

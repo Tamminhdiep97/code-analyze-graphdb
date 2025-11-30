@@ -59,9 +59,6 @@ def main():
         language=args.language,
         version=args.version
     )
-    logger.info("CHECKPOINT")
-
-    logger.info(f"review result: {result}")
 
     # logger.info the results
     logger.info(f"\n=== Code Review Results for {file_path} ===")
@@ -70,8 +67,8 @@ def main():
         logger.info(f"  - Line {signal.line_no}: [{signal.severity.upper()} {signal.signal_type.value}] {signal.message}")
 
     logger.info(f"\nFound {len(result.context)} related components:")
-    for ctx in result.context:
-        logger.info(f"  - {ctx.get('type', 'Unknown')} {ctx.get('name', 'Unknown')} at line {ctx.get('line_start', 'Unknown')}")
+    # for ctx in result.context:
+    #     logger.info(f"  - {ctx.get('type', 'Unknown')} {ctx.get('name', 'Unknown')} at line {ctx.get('line_start', 'Unknown')}")
 
     logger.info(f"\nFound {len(result.relationships)} relationships:")
     for rel in result.relationships:

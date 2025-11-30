@@ -21,8 +21,12 @@ class GraphBuilder:
         Sanitize file path to create safe vertex IDs for Nebula Graph
         Replace special characters that could interfere with queries
         """
-        # Replace path separators and special characters with underscores
-        safe_id = file_path.replace('/', '_').replace('\\', '_').replace('.', '_').replace('-', '_')
+        import re
+        # Replace path separators with underscores
+        safe_id = file_path.replace('/', '_').replace('\\', '_')
+        # Remove or replace any characters that could cause issues in queries
+        # Only allow alphanumeric characters and underscore to prevent syntax errors
+        safe_id = re.sub(r'[^a-zA-Z0-9_]', '_', safe_id)
         return safe_id
 
     def __init__(self, graph_host: str = "localhost", graph_port: int = 9669, user: str = "root", password: str = "password", space: str = "code_graph"):
@@ -30,135 +34,287 @@ class GraphBuilder:
         Initialize the graph builder with connection to Nebula Graph
         """
         self.space = space
+        logger.info(f"Initializing GraphBuilder with host={graph_host}, port={graph_port}, space={space}")
+
         # Initialize connection pool
         self.config = Config()
         self.config.max_connection_pool_size = 10
         self.connection_pool = ConnectionPool()
+        logger.info("Attempting to initialize connection pool...")
         if not self.connection_pool.init([(graph_host, graph_port)], self.config):
+            logger.error("Failed to initialize connection pool")
             raise Exception("Failed to initialize connection pool")
+        logger.info("Connection pool initialized successfully")
+
+        logger.info(f"Attempting to get session with user {user}...")
         self.session = self.connection_pool.get_session(user, password)
+        logger.info("Session obtained successfully")
 
         # Create space if it doesn't exist
+        logger.info("Creating space if it doesn't exist...")
         self._create_space()
+
         # Use the space
-        self.session.execute(f'USE {space};')
+        logger.info(f"Using space {space}")
+        use_result = self.session.execute(f'USE {space};')
+        if use_result.is_succeeded():
+            logger.info(f"Successfully switched to space {space}")
+        else:
+            logger.error(f"Failed to switch to space {space}: {use_result.error_msg()}")
+            raise Exception(f"Failed to switch to space {space}: {use_result.error_msg()}")
 
     def _create_space(self):
         """
         Create the graph space if it doesn't exist
         """
         try:
-            # Create space for code graph
+            logger.info(f"Creating space {self.space} if it doesn't exist")
+            # Create space for code graph with larger vertex ID size to accommodate longer vertex IDs
             create_space_query = f'''
             CREATE SPACE IF NOT EXISTS {self.space} (
                 partition_num = 1,
                 replica_factor = 1,
-                vid_type = FIXED_STRING(32)
+                vid_type = FIXED_STRING(256)
             );
             '''
-            self.session.execute(create_space_query)
+            logger.info(f"Executing space creation query: {create_space_query}...")
+            result = self.session.execute(create_space_query)
+            if result.is_succeeded():
+                logger.info(f"Successfully created or verified space {self.space}")
+            else:
+                logger.error(f"Failed to create space: {result.error_msg()}")
+                raise Exception(f"Failed to create space: {result.error_msg()}")
 
             # Wait a bit for space creation to complete
             import time
-            time.sleep(1)
+            logger.info("Waiting for space creation to complete...")
+            time.sleep(5)  # Increased wait time to ensure space is fully ready
+
+            # Verify that the space exists before creating schema
+            logger.info("Verifying space exists before schema creation...")
+            try:
+                # Try to switch to the space to verify it's ready
+                verify_result = self.session.execute(f"USE {self.space};")
+                if verify_result.is_succeeded():
+                    logger.info(f"Successfully verified and switched to space {self.space}")
+                    # Switch back to the original context
+                    self.session.execute("USE system;")  # Switch back to system space
+                else:
+                    logger.error(f"Could not access space {self.space}: {verify_result.error_msg()}")
+                    raise Exception(f"Space {self.space} was not created properly: {verify_result.error_msg()}")
+            except Exception as e:
+                logger.warning(f"Could not verify space exists due to: {e}, continuing with schema creation...")
+                # If verification fails, still continue with schema creation since space was created
 
             # Now create the schema (tags and edges)
+            logger.info("Creating schema (tags and edges)...")
             self._create_schema()
         except Exception as e:
             logger.error(f"Error creating space: {e}")
+            raise
 
     def _create_schema(self):
         """
         Create tags and edges for efficient querying in Nebula
         """
         try:
-            # Use the space first
-            self.session.execute(f'USE {self.space};')
+            logger.info(f"Using space {self.space} for schema creation")
+            # Use the space first - with retry logic in case space is not fully ready
+            use_result = None
+            for attempt in range(5):  # Try up to 5 times
+                use_result = self.session.execute(f'USE {self.space};')
+                if use_result.is_succeeded():
+                    logger.info("Successfully switched to space for schema creation")
+                    break
+                else:
+                    logger.warning(f"Attempt {attempt + 1} to use space failed: {use_result.error_msg()}")
+                    import time
+                    time.sleep(2)  # Wait before retry
+            else:
+                # If all attempts failed
+                logger.error(f"Failed to use space {self.space} after 5 attempts: {use_result.error_msg()}")
+                raise Exception(f"Failed to use space {self.space} after 5 attempts: {use_result.error_msg()}")
 
             # Create tags for different code entities
-            file_tag_query = '''
-            CREATE TAG IF NOT EXISTS File (path string);
-            '''
-            self.session.execute(file_tag_query)
+            logger.info("Creating File tag...")
+            file_tag_query = '''CREATE TAG IF NOT EXISTS File (`path` string);'''
+            result = self.session.execute(file_tag_query)
+            if result.is_succeeded():
+                logger.info("Successfully created File tag")
+            else:
+                logger.error(f"Failed to create File tag: {result.error_msg()}")
+                raise Exception(f"Failed to create File tag: {result.error_msg()}")
 
+            logger.info("Creating Function tag...")
             function_tag_query = '''
             CREATE TAG IF NOT EXISTS Function (name string, file_path string, line_start int, line_end int, docstring string);
             '''
-            self.session.execute(function_tag_query)
+            result = self.session.execute(function_tag_query)
+            if result.is_succeeded():
+                logger.info("Successfully created Function tag")
+            else:
+                logger.error(f"Failed to create Function tag: {result.error_msg()}")
+                raise Exception(f"Failed to create Function tag: {result.error_msg()}")
 
+            logger.info("Creating Variable tag...")
             variable_tag_query = '''
             CREATE TAG IF NOT EXISTS Variable (name string, scope string, function_name string, file_path string, type string, line_start int);
             '''
-            self.session.execute(variable_tag_query)
+            result = self.session.execute(variable_tag_query)
+            if result.is_succeeded():
+                logger.info("Successfully created Variable tag")
+            else:
+                logger.error(f"Failed to create Variable tag: {result.error_msg()}")
+                raise Exception(f"Failed to create Variable tag: {result.error_msg()}")
 
+            logger.info("Creating Class tag...")
             class_tag_query = '''
             CREATE TAG IF NOT EXISTS Class (name string, file_path string, line_start int, line_end int);
             '''
-            self.session.execute(class_tag_query)
+            result = self.session.execute(class_tag_query)
+            if result.is_succeeded():
+                logger.info("Successfully created Class tag")
+            else:
+                logger.error(f"Failed to create Class tag: {result.error_msg()}")
+                raise Exception(f"Failed to create Class tag: {result.error_msg()}")
 
+            logger.info("Creating Method tag...")
             method_tag_query = '''
             CREATE TAG IF NOT EXISTS Method (name string, class_name string, file_path string, line_start int, line_end int);
             '''
-            self.session.execute(method_tag_query)
+            result = self.session.execute(method_tag_query)
+            if result.is_succeeded():
+                logger.info("Successfully created Method tag")
+            else:
+                logger.error(f"Failed to create Method tag: {result.error_msg()}")
+                raise Exception(f"Failed to create Method tag: {result.error_msg()}")
 
+            logger.info("Creating Parameter tag...")
             parameter_tag_query = '''
             CREATE TAG IF NOT EXISTS Parameter (name string, type string, function_name string, file_path string);
             '''
-            self.session.execute(parameter_tag_query)
+            result = self.session.execute(parameter_tag_query)
+            if result.is_succeeded():
+                logger.info("Successfully created Parameter tag")
+            else:
+                logger.error(f"Failed to create Parameter tag: {result.error_msg()}")
+                raise Exception(f"Failed to create Parameter tag: {result.error_msg()}")
 
+            logger.info("Creating Module tag...")
             module_tag_query = '''
             CREATE TAG IF NOT EXISTS Module (name string, as_name string, file_path string);
             '''
-            self.session.execute(module_tag_query)
+            result = self.session.execute(module_tag_query)
+            if result.is_succeeded():
+                logger.info("Successfully created Module tag")
+            else:
+                logger.error(f"Failed to create Module tag: {result.error_msg()}")
+                raise Exception(f"Failed to create Module tag: {result.error_msg()}")
 
+            logger.info("Creating Import tag...")
             import_tag_query = '''
             CREATE TAG IF NOT EXISTS Import (name string, as_name string, module string, file_path string);
             '''
-            self.session.execute(import_tag_query)
+            result = self.session.execute(import_tag_query)
+            if result.is_succeeded():
+                logger.info("Successfully created Import tag")
+            else:
+                logger.error(f"Failed to create Import tag: {result.error_msg()}")
+                raise Exception(f"Failed to create Import tag: {result.error_msg()}")
 
+            logger.info("Creating Struct tag...")
             struct_tag_query = '''
             CREATE TAG IF NOT EXISTS Struct (name string, file_path string, line int, column int);
             '''
-            self.session.execute(struct_tag_query)
+            result = self.session.execute(struct_tag_query)
+            if result.is_succeeded():
+                logger.info("Successfully created Struct tag")
+            else:
+                logger.error(f"Failed to create Struct tag: {result.error_msg()}")
+                raise Exception(f"Failed to create Struct tag: {result.error_msg()}")
 
+            logger.info("Creating Include tag...")
             include_tag_query = '''
             CREATE TAG IF NOT EXISTS Include (file string, file_path string, line int);
             '''
-            self.session.execute(include_tag_query)
+            result = self.session.execute(include_tag_query)
+            if result.is_succeeded():
+                logger.info("Successfully created Include tag")
+            else:
+                logger.error(f"Failed to create Include tag: {result.error_msg()}")
+                raise Exception(f"Failed to create Include tag: {result.error_msg()}")
 
             # Create edge types for relationships
+            logger.info("Creating CONTAINS edge...")
             contains_edge_query = '''
             CREATE EDGE IF NOT EXISTS CONTAINS ();
             '''
-            self.session.execute(contains_edge_query)
+            result = self.session.execute(contains_edge_query)
+            if result.is_succeeded():
+                logger.info("Successfully created CONTAINS edge")
+            else:
+                logger.error(f"Failed to create CONTAINS edge: {result.error_msg()}")
+                raise Exception(f"Failed to create CONTAINS edge: {result.error_msg()}")
 
+            logger.info("Creating HAS_PARAMETER edge...")
             has_parameter_edge_query = '''
             CREATE EDGE IF NOT EXISTS HAS_PARAMETER ();
             '''
-            self.session.execute(has_parameter_edge_query)
+            result = self.session.execute(has_parameter_edge_query)
+            if result.is_succeeded():
+                logger.info("Successfully created HAS_PARAMETER edge")
+            else:
+                logger.error(f"Failed to create HAS_PARAMETER edge: {result.error_msg()}")
+                raise Exception(f"Failed to create HAS_PARAMETER edge: {result.error_msg()}")
 
+            logger.info("Creating CALLS edge...")
             calls_edge_query = '''
             CREATE EDGE IF NOT EXISTS CALLS ();
             '''
-            self.session.execute(calls_edge_query)
+            result = self.session.execute(calls_edge_query)
+            if result.is_succeeded():
+                logger.info("Successfully created CALLS edge")
+            else:
+                logger.error(f"Failed to create CALLS edge: {result.error_msg()}")
+                raise Exception(f"Failed to create CALLS edge: {result.error_msg()}")
 
+            logger.info("Creating IMPORTS edge...")
             imports_edge_query = '''
             CREATE EDGE IF NOT EXISTS IMPORTS ();
             '''
-            self.session.execute(imports_edge_query)
+            result = self.session.execute(imports_edge_query)
+            if result.is_succeeded():
+                logger.info("Successfully created IMPORTS edge")
+            else:
+                logger.error(f"Failed to create IMPORTS edge: {result.error_msg()}")
+                raise Exception(f"Failed to create IMPORTS edge: {result.error_msg()}")
 
+            logger.info("Creating IMPORTS_FROM edge...")
             imports_from_edge_query = '''
             CREATE EDGE IF NOT EXISTS IMPORTS_FROM ();
             '''
-            self.session.execute(imports_from_edge_query)
+            result = self.session.execute(imports_from_edge_query)
+            if result.is_succeeded():
+                logger.info("Successfully created IMPORTS_FROM edge")
+            else:
+                logger.error(f"Failed to create IMPORTS_FROM edge: {result.error_msg()}")
+                raise Exception(f"Failed to create IMPORTS_FROM edge: {result.error_msg()}")
 
+            logger.info("Creating INCLUDES edge...")
             includes_edge_query = '''
             CREATE EDGE IF NOT EXISTS INCLUDES ();
             '''
-            self.session.execute(includes_edge_query)
+            result = self.session.execute(includes_edge_query)
+            if result.is_succeeded():
+                logger.info("Successfully created INCLUDES edge")
+            else:
+                logger.error(f"Failed to create INCLUDES edge: {result.error_msg()}")
+                raise Exception(f"Failed to create INCLUDES edge: {result.error_msg()}")
 
+            logger.info("Schema creation completed successfully")
         except Exception as e:
             logger.error(f"Error creating schema: {e}")
+            raise
 
     def build_graph_from_ast(self, code: str, file_path: str, language: str, version: Optional[str] = None):
         """
@@ -558,8 +714,10 @@ class GraphBuilder:
         # Maintain mapping of function name to vertex ID for relationship creation
         function_vertex_map = {}
 
+        # Use the sanitize method to ensure safe vertex IDs
+        sanitized_file_path = self._sanitize_vertex_id(file_path)
         # Add file vertex
-        file_vertex_id = f"file_{file_path.replace('/', '_').replace('.', '_')}"
+        file_vertex_id = f"file_{sanitized_file_path}"
         vertices_info['files'].append({
             'vertex_id': file_vertex_id,
             'file_path': file_path
@@ -673,7 +831,9 @@ class GraphBuilder:
         if not var_name:
             return
 
-        var_vertex_id = f"c_variable_{var_name}_{file_path}_{cursor.location.line}"
+        # Use the sanitize method to ensure safe vertex IDs
+        sanitized_file_path = self._sanitize_vertex_id(file_path)
+        var_vertex_id = f"c_variable_{var_name}_{sanitized_file_path}_{cursor.location.line}"
 
         # Add variable vertex
         vertices_info['variables'].append({
@@ -742,7 +902,9 @@ class GraphBuilder:
         if not include_file:
             return
 
-        include_vertex_id = f"include_{include_file.replace('/', '_').replace('.', '_')}_{cursor.location.line}"
+        # Use the sanitize method to ensure safe vertex IDs
+        sanitized_include_file = self._sanitize_vertex_id(include_file)
+        include_vertex_id = f"include_{sanitized_include_file}_{cursor.location.line}"
 
         # Add include vertex
         vertices_info['includes'].append({
@@ -762,171 +924,244 @@ class GraphBuilder:
         """
         Second pass: create all vertices in the database
         """
+        # Add logging to see what data we have
+        logger.info(f"Vertices info contains: {list(vertices_info.keys())}")
+        for key, value in vertices_info.items():
+            logger.info(f"Number of {key}: {len(value) if value else 0}")
+
         # Create functions (always present for both Python and C)
-        logger.info("create Functions")
+        logger.info("Creating Functions")
         for func in vertices_info.get('functions', []):
             insert_function_query = f'''
             INSERT VERTEX Function(name, file_path, line_start, line_end, docstring)
             VALUES "{func['vertex_id']}":("{func['name']}", "{func['file_path']}", {func['line_start']}, {func['line_end']}, "{func.get('docstring', '')}");
             '''
             try:
-                self.session.execute(insert_function_query)
+                logger.info(f"Executing function insertion query: INSERT VERTEX Function(name, file_path...) VALUES \"{func['vertex_id']}\":(\"{func['name']}\", \"{func['file_path']}\"...")
+                result = self.session.execute(insert_function_query)
+                if result.is_succeeded():
+                    logger.info(f"Successfully inserted function {func['name']} with ID {func['vertex_id']}")
+                else:
+                    logger.error(f"Failed to insert function {func['name']}: {result.error_msg()}")
             except Exception as e:
-                logger.error(f"Error inserting function {func['name']}: {e}")
+                logger.error(f"Exception when inserting function {func['name']}: {e}")
 
         # Create classes (only for Python)
-        logger.info("Create classes")
+        logger.info("Creating Classes")
         for cls in vertices_info.get('classes', []):
             insert_class_query = f'''
             INSERT VERTEX Class(name, file_path, line_start, line_end)
             VALUES "{cls['vertex_id']}":("{cls['name']}", "{cls['file_path']}", {cls['line_start']}, {cls['line_end']});
             '''
             try:
-                self.session.execute(insert_class_query)
+                logger.info(f"Executing class insertion query: INSERT VERTEX Class(name, file_path...) VALUES \"{cls['vertex_id']}\":(\"{cls['name']}\"...")
+                result = self.session.execute(insert_class_query)
+                if result.is_succeeded():
+                    logger.info(f"Successfully inserted class {cls['name']} with ID {cls['vertex_id']}")
+                else:
+                    logger.error(f"Failed to insert class {cls['name']}: {result.error_msg()}")
             except Exception as e:
-                logger.error(f"Error inserting class {cls['name']}: {e}")
+                logger.error(f"Exception when inserting class {cls['name']}: {e}")
 
         # Create variables
-        logger.info("Create variable")
+        logger.info("Creating Variables")
         for var in vertices_info.get('variables', []):
             insert_var_query = f'''
             INSERT VERTEX Variable(name, scope, function_name, file_path, type, line_start)
             VALUES "{var['vertex_id']}":("{var['name']}", "{var.get('scope', '')}", "{var.get('function_name', '')}", "{var['file_path']}", "{var.get('type', '')}", {var['line_start']});
             '''
             try:
-                self.session.execute(insert_var_query)
+                logger.info(f"Executing variable insertion query: INSERT VERTEX Variable(name, scope...) VALUES \"{var['vertex_id']}\":(\"{var['name']}\"...")
+                result = self.session.execute(insert_var_query)
+                if result.is_succeeded():
+                    logger.info(f"Successfully inserted variable {var['name']} with ID {var['vertex_id']}")
+                else:
+                    logger.error(f"Failed to insert variable {var['name']}: {result.error_msg()}")
             except Exception as e:
-                logger.error(f"Error inserting variable {var['name']}: {e}")
+                logger.error(f"Exception when inserting variable {var['name']}: {e}")
 
         # Create parameters
-        logger.info("Create parameters")
+        logger.info("Creating Parameters")
         for param in vertices_info.get('parameters', []):
             insert_param_query = f'''
             INSERT VERTEX Parameter(name, type, function_name, file_path)
             VALUES "{param['vertex_id']}":("{param['name']}", "{param['type']}", "{param['function_name']}", "{param['file_path']}");
             '''
             try:
-                self.session.execute(insert_param_query)
+                logger.info(f"Executing parameter insertion query: INSERT VERTEX Parameter(name, type...) VALUES \"{param['vertex_id']}\":(\"{param['name']}\"...")
+                result = self.session.execute(insert_param_query)
+                if result.is_succeeded():
+                    logger.info(f"Successfully inserted parameter {param['name']} with ID {param['vertex_id']}")
+                else:
+                    logger.error(f"Failed to insert parameter {param['name']}: {result.error_msg()}")
             except Exception as e:
-                logger.error(f"Error inserting parameter {param['name']}: {e}")
+                logger.error(f"Exception when inserting parameter {param['name']}: {e}")
 
         # Create files
-        logger.info("Create files")
+        logger.info("Creating Files")
         for file_info in vertices_info.get('files', []):
-            insert_file_query = f'''
-            INSERT VERTEX File(path) VALUES "{file_info['vertex_id']}":("{file_info['file_path']}");
-            '''
+            insert_file_query = f'''INSERT VERTEX File(`path`) VALUES "{file_info['vertex_id']}":("{file_info['file_path']}");'''
             try:
-                self.session.execute(insert_file_query)
+                logger.info(f"Executing file insertion query: INSERT VERTEX File(path) VALUES \"{file_info['vertex_id']}\":(\"{file_info['file_path']}\"...")
+                result = self.session.execute(insert_file_query)
+                if result.is_succeeded():
+                    logger.info(f"Successfully inserted file {file_info['file_path']} with ID {file_info['vertex_id']}")
+                else:
+                    logger.error(f"Failed to insert file {file_info['file_path']}: {result.error_msg()}")
             except Exception as e:
-                logger.error(f"Error inserting file {file_info['file_path']}: {e}")
+                logger.error(f"Exception when inserting file {file_info['file_path']}: {e}")
 
         # Create modules (only for Python)
-        logger.info("Create modules")
+        logger.info("Creating Modules")
         for module in vertices_info.get('modules', []):
             insert_module_query = f'''
             INSERT VERTEX Module(name, as_name, file_path)
             VALUES "{module['vertex_id']}":("{module['name']}", "{module['as_name']}", "{module['file_path']}");
             '''
             try:
-                self.session.execute(insert_module_query)
+                logger.info(f"Executing module insertion query: INSERT VERTEX Module(name, as_name...) VALUES \"{module['vertex_id']}\":(\"{module['name']}\"...")
+                result = self.session.execute(insert_module_query)
+                if result.is_succeeded():
+                    logger.info(f"Successfully inserted module {module['name']} with ID {module['vertex_id']}")
+                else:
+                    logger.error(f"Failed to insert module {module['name']}: {result.error_msg()}")
             except Exception as e:
-                logger.error(f"Error inserting module {module['name']}: {e}")
+                logger.error(f"Exception when inserting module {module['name']}: {e}")
 
         # Create imports (only for Python)
-        logger.info("Create imports")
+        logger.info("Creating Imports")
         for imp in vertices_info.get('imports', []):
             insert_import_query = f'''
             INSERT VERTEX Import(name, as_name, module, file_path)
             VALUES "{imp['vertex_id']}":("{imp['name']}", "{imp['as_name']}", "{imp['module']}", "{imp['file_path']}");
             '''
             try:
-                self.session.execute(insert_import_query)
+                logger.info(f"Executing import insertion query: INSERT VERTEX Import(name, as_name...) VALUES \"{imp['vertex_id']}\":(\"{imp['name']}\"...")
+                result = self.session.execute(insert_import_query)
+                if result.is_succeeded():
+                    logger.info(f"Successfully inserted import {imp['name']} with ID {imp['vertex_id']}")
+                else:
+                    logger.error(f"Failed to insert import {imp['name']}: {result.error_msg()}")
             except Exception as e:
-                logger.error(f"Error inserting import {imp['name']}: {e}")
+                logger.error(f"Exception when inserting import {imp['name']}: {e}")
 
         # Create structs (only for C)
-        logger.info("Create structs")
+        logger.info("Creating Structs")
         for struct in vertices_info.get('structs', []):
             insert_struct_query = f'''
             INSERT VERTEX Struct(name, file_path, line, column)
             VALUES "{struct['vertex_id']}":("{struct['name']}", "{struct['file_path']}", {struct['line']}, {struct['column']});
             '''
             try:
-                self.session.execute(insert_struct_query)
+                logger.info(f"Executing struct insertion query: INSERT VERTEX Struct(name, file_path...) VALUES \"{struct['vertex_id']}\":(\"{struct['name']}\"...")
+                result = self.session.execute(insert_struct_query)
+                if result.is_succeeded():
+                    logger.info(f"Successfully inserted struct {struct['name']} with ID {struct['vertex_id']}")
+                else:
+                    logger.error(f"Failed to insert struct {struct['name']}: {result.error_msg()}")
             except Exception as e:
-                logger.error(f"Error inserting struct {struct['name']}: {e}")
+                logger.error(f"Exception when inserting struct {struct['name']}: {e}")
 
         # Create includes (only for C)
-        logger.info("Create includes")
+        logger.info("Creating Includes")
         for include in vertices_info.get('includes', []):
             insert_include_query = f'''
             INSERT VERTEX Include(file, file_path, line)
             VALUES "{include['vertex_id']}":("{include['file']}", "{include['file_path']}", {include['line']});
             '''
             try:
-                self.session.execute(insert_include_query)
+                logger.info(f"Executing include insertion query: INSERT VERTEX Include(file, file_path...) VALUES \"{include['vertex_id']}\":(\"{include['file']}\"...")
+                result = self.session.execute(insert_include_query)
+                if result.is_succeeded():
+                    logger.info(f"Successfully inserted include {include['file']} with ID {include['vertex_id']}")
+                else:
+                    logger.error(f"Failed to insert include {include['file']}: {result.error_msg()}")
             except Exception as e:
-                logger.error(f"Error inserting include {include['file']}: {e}")
+                logger.error(f"Exception when inserting include {include['file']}: {e}")
 
     def _create_relationships_in_database(self, relationships: dict):
         """
         Third pass: create all relationships in the database
         """
+        logger.info(f"Creating relationships: {list(relationships.keys())}")
+        for key, value in relationships.items():
+            if key != 'function_vertex_map':
+                logger.info(f"Number of {key} relationships: {len(value) if value else 0}")
+
         # Create CONTAINS relationships
         for rel in relationships.get('contains', []):
-            contains_rel_query = f'''
-            INSERT EDGE CONTAINS VALUES "{rel['from_vertex']}" -> "{rel['to_vertex']}";
-            '''
+            # contains_rel_query = f'''INSERT EDGE CONTAINS VALUES "{rel['from_vertex']}" -> "{rel['to_vertex']}";'''
+            contains_rel_query = f'''INSERT EDGE CONTAINS () VALUES '{rel["from_vertex"]}' -> '{rel["to_vertex"]}':();'''
             try:
-                self.session.execute(contains_rel_query)
+                logger.info(f"Executing CONTAINS relationship query: {contains_rel_query[:100]}...")
+                result = self.session.execute(contains_rel_query)
+                if result.is_succeeded():
+                    logger.info(f"Successfully created CONTAINS relationship: {rel['from_vertex']} -> {rel['to_vertex']}")
+                else:
+                    logger.error(f"Failed to create CONTAINS relationship: {result.error_msg()}")
             except Exception as e:
                 logger.error(f"Error creating CONTAINS relationship: {e}")
 
         # Create HAS_PARAMETER relationships
         for rel in relationships.get('has_parameter', []):
-            param_rel_query = f'''
-            INSERT EDGE HAS_PARAMETER VALUES "{rel['from_vertex']}" -> "{rel['to_vertex']}";
-            '''
+            param_rel_query = f'''INSERT EDGE HAS_PARAMETER () VALUES '{rel["from_vertex"]}' -> '{rel["to_vertex"]}':();'''
             try:
-                self.session.execute(param_rel_query)
+                logger.info(f"Executing HAS_PARAMETER relationship query: {param_rel_query[:100]}...")
+                result = self.session.execute(param_rel_query)
+                if result.is_succeeded():
+                    logger.info(f"Successfully created HAS_PARAMETER relationship: {rel['from_vertex']} -> {rel['to_vertex']}")
+                else:
+                    logger.error(f"Failed to create HAS_PARAMETER relationship: {result.error_msg()}")
             except Exception as e:
                 logger.error(f"Error creating HAS_PARAMETER relationship: {e}")
 
         # Get the function vertex map that was stored during collection
         function_vertex_map = relationships.get('function_vertex_map', {})
+        logger.info(f"Function vertex map has {len(function_vertex_map)} entries")
 
         # Create CALLS relationships (this uses the in-memory function vertex mapping)
         for rel in relationships.get('calls', []):
+            logger.info(f"Processing call relationship: {rel}")
             self._create_calls_relationship(rel, function_vertex_map)
 
         # Create IMPORTS relationships
         for rel in relationships.get('imports', []):
             imports_rel_query = f'''
-            INSERT EDGE IMPORTS VALUES "{rel['from_vertex']}" -> "{rel['to_vertex']}";
+            INSERT EDGE IMPORTS VALUES '{rel["from_vertex"]}' -> '{rel["to_vertex"]}':();
             '''
             try:
-                self.session.execute(imports_rel_query)
+                logger.info(f"Executing IMPORTS relationship query: {imports_rel_query[:100]}...")
+                result = self.session.execute(imports_rel_query)
+                if result.is_succeeded():
+                    logger.info(f"Successfully created IMPORTS relationship: {rel['from_vertex']} -> {rel['to_vertex']}")
+                else:
+                    logger.error(f"Failed to create IMPORTS relationship: {result.error_msg()}")
             except Exception as e:
                 logger.error(f"Error creating IMPORTS relationship: {e}")
 
         # Create IMPORTS_FROM relationships
         for rel in relationships.get('imports_from', []):
-            imports_from_rel_query = f'''
-            INSERT EDGE IMPORTS_FROM VALUES "{rel['from_vertex']}" -> "{rel['to_vertex']}";
-            '''
+            imports_from_rel_query = f'''INSERT EDGE IMPORTS_FROM () VALUES "{rel['from_vertex']}" -> "{rel['to_vertex']}";'''
             try:
-                self.session.execute(imports_from_rel_query)
+                logger.info(f"Executing IMPORTS_FROM relationship query: {imports_from_rel_query[:100]}...")
+                result = self.session.execute(imports_from_rel_query)
+                if result.is_succeeded():
+                    logger.info(f"Successfully created IMPORTS_FROM relationship: {rel['from_vertex']} -> {rel['to_vertex']}")
+                else:
+                    logger.error(f"Failed to create IMPORTS_FROM relationship: {result.error_msg()}")
             except Exception as e:
                 logger.error(f"Error creating IMPORTS_FROM relationship: {e}")
 
         # Create INCLUDES relationships
         for rel in relationships.get('includes', []):
-            includes_rel_query = f'''
-            INSERT EDGE INCLUDES VALUES "{rel['from_vertex']}" -> "{rel['to_vertex']}";
-            '''
+            includes_rel_query = "INSERT EDGE `INCLUDES` VALUES '{}' -> '{}':();".format(rel['from_vertex'], rel['to_vertex'])
             try:
-                self.session.execute(includes_rel_query)
+                logger.info(f"Executing INCLUDES relationship query: {includes_rel_query[:100]}...")
+                result = self.session.execute(includes_rel_query)
+                if result.is_succeeded():
+                    logger.info(f"Successfully created INCLUDES relationship: {rel['from_vertex']} -> {rel['to_vertex']}")
+                else:
+                    logger.error(f"Failed to create INCLUDES relationship: {result.error_msg()}")
             except Exception as e:
                 logger.error(f"Error creating INCLUDES relationship: {e}")
 
@@ -936,6 +1171,9 @@ class GraphBuilder:
         """
         if function_vertex_map is None:
             function_vertex_map = {}
+
+        logger.info(f"Processing call_info: {call_info}")
+        logger.info(f"Function vertex map keys: {list(function_vertex_map.keys())}")
 
         # Get caller and callee function names from the call info
         caller_function_name = call_info.get('caller_function_name')
@@ -961,30 +1199,38 @@ class GraphBuilder:
 
         # Look up the callee function in our in-memory map
         callee_key = f"{callee_name}@{callee_file_path}"
+        logger.info(f"Looking up callee key: {callee_key}")
         if callee_key not in function_vertex_map:
             logger.warning(f"Could not find user-defined callee function: {callee_name} in file {callee_file_path}")
+            logger.warning(f"Available callee keys: {list(function_vertex_map.keys())}")
             return
 
         callee_vertex_id = function_vertex_map[callee_key]
+        logger.info(f"Found callee vertex ID: {callee_vertex_id}")
 
         # Look up the caller function in our in-memory map
         if caller_function_name:
             caller_file_path = call_info['caller_file_path']
             caller_key = f"{caller_function_name}@{caller_file_path}"
+            logger.info(f"Looking up caller key: {caller_key}")
 
             if caller_key not in function_vertex_map:
                 logger.debug(f"Could not find caller function: {caller_function_name}")
+                logger.debug(f"Available caller keys: {list(function_vertex_map.keys())}")
                 return
 
             caller_vertex_id = function_vertex_map[caller_key]
+            logger.info(f"Found caller vertex ID: {caller_vertex_id}")
 
             # Create CALLS relationship
-            calls_rel_query = f'''
-            INSERT EDGE CALLS VALUES "{caller_vertex_id}" -> "{callee_vertex_id}";
-            '''
+            calls_rel_query = f"INSERT EDGE CALLS () VALUES '{caller_vertex_id}' -> '{callee_vertex_id}':()";
             try:
-                self.session.execute(calls_rel_query)
-                logger.info(f"Created CALLS relationship: {caller_function_name} -> {callee_name}")
+                logger.info(f"Executing CALLS relationship query: {calls_rel_query[:100]}...")
+                result = self.session.execute(calls_rel_query)
+                if result.is_succeeded():
+                    logger.info(f"Successfully created CALLS relationship: {caller_function_name} -> {callee_name}")
+                else:
+                    logger.error(f"Failed to create CALLS relationship: {result.error_msg()}")
             except Exception as e:
                 logger.error(f"Error creating CALLS relationship between {caller_vertex_id} and {callee_vertex_id}: {e}")
         else:
@@ -1056,7 +1302,7 @@ class GraphBuilder:
         sanitized_file_path = self._sanitize_vertex_id(file_path)
         file_vertex_id = f"file_{sanitized_file_path}"
         insert_file_query = f'''
-        INSERT VERTEX File(path) VALUES "{file_vertex_id}":("{file_path}");
+        INSERT VERTEX File(`path`) VALUES "{file_vertex_id}":("{file_path}");
         '''
         try:
             self.session.execute(insert_file_query)
@@ -1087,8 +1333,10 @@ class GraphBuilder:
         try:
             self.session.execute(insert_class_query)
 
+            # Use the sanitize method to ensure safe vertex IDs
+            sanitized_file_path = self._sanitize_vertex_id(file_path)
             # Create relationship to file
-            file_vertex_id = f"file_{file_path.replace('/', '_').replace('.', '_')}"
+            file_vertex_id = f"file_{sanitized_file_path}"
             insert_file_query = f'''
             INSERT VERTEX File(path) VALUES "{file_vertex_id}":("{file_path}");
             '''
@@ -1307,8 +1555,10 @@ class GraphBuilder:
         """
         from clang.cindex import CursorKind
 
+        # Use the sanitize method to ensure safe vertex IDs
+        sanitized_file_path = self._sanitize_vertex_id(file_path)
         # Create file node if it doesn't exist
-        file_vertex_id = f"file_{file_path.replace('/', '_').replace('.', '_')}"
+        file_vertex_id = f"file_{sanitized_file_path}"
         insert_file_query = f'''
         INSERT VERTEX File(path) VALUES "{file_vertex_id}":("{file_path}");
         '''
@@ -1510,7 +1760,9 @@ class GraphBuilder:
         if not include_file:
             return
 
-        include_vertex_id = f"include_{include_file.replace('/', '_').replace('.', '_')}_{cursor.location.line}"
+        # Use the sanitize method to ensure safe vertex IDs
+        sanitized_include_file = self._sanitize_vertex_id(include_file)
+        include_vertex_id = f"include_{sanitized_include_file}_{cursor.location.line}"
 
         insert_include_query = f'''
         INSERT VERTEX Include(file, file_path, line)

@@ -53,19 +53,22 @@ class ReviewAlgorithm:
         # Step 1: Parse the code and build graph representation
         logger.info(f"Building graph for {file_path}")
         self.graph_builder.build_graph_from_ast(
-            code, file_path, language, version)
+            code, file_path, language, version
+        )
 
         # Step 2: Extract signals from the code
         logger.info(f"Extracting signals from {file_path}")
         signals = self.signals_extractor.extract_signals(
-            code, file_path, language, version)
+            code, file_path, language, version
+        )
 
         # Step 3: Get relevant context based on graph relationships
         logger.info(f"Getting context for {file_path}")
         if changed_functions:
             # If we know specific changed functions, get impacted functions
             context = self.query_system.get_impacted_functions(
-                file_path, changed_functions)
+                file_path, changed_functions
+            )
         else:
             # Otherwise, get related components
             context = self.query_system.get_related_components(file_path)
@@ -73,6 +76,7 @@ class ReviewAlgorithm:
         # Step 4: Get function dependencies and callers for relationship analysis
         relationships = []
         if changed_functions:
+            logger.info(f"Checkpoint: Changed function {changed_functions}")
             for func in changed_functions:
                 # Get functions this function calls
                 deps = self.query_system.get_function_dependencies(
@@ -85,8 +89,11 @@ class ReviewAlgorithm:
         else:
             # When no specific changed functions are provided, get all relationships for the file
             # Get all functions in the file and their dependencies/callers
+            logger.info(file_path)
             related_components = self.query_system.get_related_components(file_path)
+            logger.info(f"Related components: {related_components}")
             function_names = [comp.get('name') for comp in related_components if comp.get('type') == 'Function']
+
 
             for func_name in function_names:
                 # Get functions this function calls
