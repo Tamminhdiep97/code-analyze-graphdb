@@ -1,24 +1,28 @@
 services:
-  code_parser:
+  code-analysis-api:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: code-parser
-    entrypoint: ["python3"]
-    command: ["-m", "experiment.main", "experiment/test_code/c/test_function_calls.c", "--language", "c", "--version", "c99"]
+    container_name: code-analysis-api
     ports:
       - "8000:8000"
     volumes:
-      - ./experiment:/app/experiment
+      - ./uploads:/app/uploads
+      - ./api:/app/api
+      - ./config:/app/config
+      - ./core:/app/core
+      - ./tests:/app/tests
+      - ./experiment:/app/experiment  # Keep existing experiment code
     environment:
-      - PYTHONUNBUFFERED=1
-      - GRAPH_HOST=graphd
+      - GRAPH_HOST=graphd  # Assuming Nebula is available at 'graphd' in the network
       - GRAPH_PORT=9669
       - GRAPH_USER=root
-      - GRAPH_PASSWORD=password
-      - GRAPH_SPACE=code_graph
+      - GRAPH_PASSWORD=123123
+      - UPLOAD_FOLDER=/app/uploads
     networks:
       - code-review-external-network
+    restart: unless-stopped
+    command: uvicorn api.v1.app:app --host 0.0.0.0 --port 8000
 
 networks:
   code-review-external-network:

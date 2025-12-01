@@ -47,7 +47,7 @@ RUN ln -s /usr/bin/clang-16 /usr/bin/clang && \
 WORKDIR /app
 
 # Copy requirements file
-COPY requirements.txt .
+COPY experiment/requirements.txt .
 
 # Install Python dependencies
 RUN pip3 install --upgrade pip && \

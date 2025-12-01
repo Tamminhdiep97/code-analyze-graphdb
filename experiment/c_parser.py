@@ -1,27 +1,26 @@
 """
 C Parser module using libclang to handle different C language versions
 """
-from loguru import logger
 from typing import Optional, Dict, Any
 from pathlib import Path
 import tempfile
 import os
 
 # Import clang only if available
-try:
-    from clang import cindex
-    from clang.cindex import Index, TranslationUnit, TranslationUnitLoadError
-    import clang
-    CLANG_AVAILABLE = True
-except ImportError:
-    CLANG_AVAILABLE = False
-    logger.warning("libclang not available - C parsing will not work")
+from clang import cindex
+from clang.cindex import Index, TranslationUnit, TranslationUnitLoadError
+import clang
+from loguru import logger
+
+
+CLANG_AVAILABLE = True
+
 
 class CParser:
     """
     Parser for C code that handles different language standards (C90, C99, C11, etc.)
     """
-    
+
     # Mapping of version strings to compiler flags
     C_VERSION_FLAGS = {
         'c90': ['-std=c90'],
@@ -34,12 +33,14 @@ class CParser:
         'gnu11': ['-std=gnu11'],
         'gnu17': ['-std=gnu17'],
     }
-    
+
     def __init__(self):
         if not CLANG_AVAILABLE:
-            logger.error("libclang is not available. Please install python-clang and libclang.")
-            raise ImportError("libclang is not available. Please install python-clang and libclang.")
-        
+            logger.error(
+                "libclang is not available. Please install python-clang and libclang.")
+            raise ImportError(
+                "libclang is not available. Please install python-clang and libclang.")
+
         # Try to automatically set the libclang library file if not already set
         try:
             # This might already be configured, but if not, we can try to auto-detect
@@ -70,63 +71,69 @@ class CParser:
                     '/usr/local/lib/libclang.so',
                     '/usr/local/lib/libclang.dylib',
                 ]
-                
+
                 for path in possible_paths:
                     if os.path.exists(path):
                         cindex.Config.set_library_file(path)
                         logger.info(f"Set libclang library file to: {path}")
                         break
         except Exception as e:
-            logger.warning(f"Could not automatically set libclang library file: {e}")
-            logger.info("Make sure libclang library is installed and accessible")
-        
+            logger.warning(
+                f"Could not automatically set libclang library file: {e}")
+            logger.info(
+                "Make sure libclang library is installed and accessible")
+
         try:
             self.index = Index.create()
         except Exception as e:
             logger.error(f"Failed to create Clang Index: {e}")
-            logger.info("Make sure libclang development libraries are installed (e.g., libclang-12-dev on Ubuntu)")
+            logger.info(
+                "Make sure libclang development libraries are installed (e.g., libclang-12-dev on Ubuntu)")
             raise
-    
+
     def parse_c_code(self, code: str, version: Optional[str] = None) -> Optional['TranslationUnit']:
         """
         Parse C code with specific language version
         """
         if version is None:
             version = 'c11'  # Default to C11
-        
+
         version_lower = version.lower()
         if version_lower not in self.C_VERSION_FLAGS:
-            raise ValueError(f"Unsupported C version: {version}. Supported versions: {list(self.C_VERSION_FLAGS.keys())}")
-        
+            raise ValueError(f"Unsupported C version: {version}. Supported versions: {
+                             list(self.C_VERSION_FLAGS.keys())}")
+
         # Write code to a temporary file as libclang requires a file
         with tempfile.NamedTemporaryFile(mode='w', suffix='.c', delete=False) as f:
             f.write(code)
             temp_file_path = f.name
-        
+
         try:
             # Get the compilation flags
             args = self.C_VERSION_FLAGS[version_lower]
-            
+
             # Parse the translation unit
             tu = self.index.parse(
                 temp_file_path,
                 args=args,
                 options=TranslationUnit.PARSE_DETAILED_PROCESSING_RECORD
             )
-            
+
             # Check for parsing errors
             diagnostics = list(tu.diagnostics)
             if diagnostics:
                 for diag in diagnostics:
                     if diag.severity >= 3:  # Error level
-                        logger.error(f"Parsing error: {diag.spelling} at {diag.location}")
+                        logger.error(f"Parsing error: {
+                                     diag.spelling} at {diag.location}")
                         return None
                     else:
                         # Log warnings but don't fail
-                        logger.warning(f"Parsing warning: {diag.spelling} at {diag.location}")
-            
+                        logger.warning(f"Parsing warning: {
+                                       diag.spelling} at {diag.location}")
+
             return tu
-            
+
         except TranslationUnitLoadError as e:
             logger.error(f"Failed to parse C code: {e}")
             return None
@@ -137,27 +144,27 @@ class CParser:
             # Clean up the temporary file
             import os
             os.unlink(temp_file_path)
-    
+
     def get_ast_nodes(self, tu: 'TranslationUnit'):
         """
         Generator that yields AST nodes from the translation unit
         """
         if tu is None:
             return
-            
+
         def traverse_ast(cursor, level=0):
             yield cursor
             for child in cursor.get_children():
                 yield from traverse_ast(child, level + 1)
-        
+
         yield from traverse_ast(tu.cursor)
-    
+
     def extract_functions(self, tu: 'TranslationUnit') -> list:
         """
         Extract function definitions from the C code
         """
         from clang.cindex import CursorKind
-        
+
         functions = []
         for node in self.get_ast_nodes(tu):
             if node.kind == CursorKind.FUNCTION_DECL:
@@ -170,7 +177,7 @@ class CParser:
                     'return_type': str(node.result_type.spelling),
                     'parameters': []
                 }
-                
+
                 # Get parameters
                 for child in node.get_children():
                     if child.kind == CursorKind.PARM_DECL:
@@ -180,17 +187,17 @@ class CParser:
                             'line': child.location.line
                         }
                         func_info['parameters'].append(param_info)
-                
+
                 functions.append(func_info)
-        
+
         return functions
-    
+
     def extract_variables(self, tu: 'TranslationUnit') -> list:
         """
         Extract variable declarations from the C code
         """
         from clang.cindex import CursorKind
-        
+
         variables = []
         for node in self.get_ast_nodes(tu):
             if node.kind in (CursorKind.VAR_DECL, CursorKind.PARM_DECL):
@@ -203,15 +210,15 @@ class CParser:
                     'is_local': node.semantic_parent.kind == CursorKind.FUNCTION_DECL
                 }
                 variables.append(var_info)
-        
+
         return variables
-    
+
     def extract_includes(self, tu: 'TranslationUnit') -> list:
         """
         Extract include statements from the C code
         """
         from clang.cindex import CursorKind
-        
+
         includes = []
         for node in self.get_ast_nodes(tu):
             if node.kind == CursorKind.INCLUSION_DIRECTIVE:
@@ -221,10 +228,12 @@ class CParser:
                     'is_angled': '<' in node.spelling  # Indicates #include <...> vs #include "..."
                 }
                 includes.append(include_info)
-        
+
         return includes
 
 # Example usage and test function
+
+
 def test_c_parsing():
     """
     Test the C parser with different versions
@@ -247,39 +256,40 @@ int main() {
     return 0;
 }
 """
-    
+
     if not CLANG_AVAILABLE:
-        print("Cannot test C parsing - libclang not available")
+        logger.info("Cannot test C parsing - libclang not available")
         return
-    
+
     parser = CParser()
-    
+
     # Test different C versions
     versions = ['c90', 'c99', 'c11']
     for version in versions:
-        print(f"\nTesting C parsing with version {version}:")
+        logger.info(f"\nTesting C parsing with version {version}:")
         try:
             tu = parser.parse_c_code(sample_c_code, version)
             if tu:
-                print(f"  Successfully parsed with {version}")
-                
+                logger.info(f"  Successfully parsed with {version}")
+
                 # Extract functions
                 functions = parser.extract_functions(tu)
-                print(f"  Found {len(functions)} functions:")
+                logger.info(f"  Found {len(functions)} functions:")
                 for func in functions:
                     params = ', '.join([p['type'] for p in func['parameters']])
-                    print(f"    - {func['name']}({params}) at line {func['line']}")
-                
+                    logger.info(f"    - {func['name']}({params}) at line {func['line']}")
+
                 # Extract variables
                 variables = parser.extract_variables(tu)
-                print(f"  Found {len(variables)} variables:")
+                logger.info(f"  Found {len(variables)} variables:")
                 for var in variables[:3]:  # Just show first 3
-                    print(f"    - {var['name']} ({var['type']}) at line {var['line']}")
-                
+                    logger.info(f"    - {var['name']} ({var['type']}) at line {var['line']}")
+
             else:
-                print(f"  Failed to parse with {version}")
+                logger.info(f"  Failed to parse with {version}")
         except Exception as e:
-            print(f"  Error parsing with {version}: {e}")
+            logger.info(f"  Error parsing with {version}: {e}")
+
 
 if __name__ == "__main__":
     test_c_parsing()
